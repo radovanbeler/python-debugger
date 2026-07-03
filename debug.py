@@ -116,6 +116,8 @@ class Debug(cmd.Cmd):
         match arg:
             case "break":
                 self._print_breakpoints()
+            case _:
+                print("Invalid info argument")
         return False
 
     def _print_breakpoints(self) -> None:
