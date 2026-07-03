@@ -3,9 +3,15 @@ import enum
 import re
 import sys
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 from typing import Dict, Set
+
+
+@dataclass
+class Breakpoint:
+    temp: bool = False
 
 
 class StepMode(enum.Enum):
@@ -27,7 +33,7 @@ class Debug(cmd.Cmd):
         self.path = path
         self._exit = False
         self._running = False
-        self._breakpoints: Dict[Path, Set[int]] = {}
+        self._breakpoints: Dict[Path, Dict[int, Breakpoint]] = {}
         self._step_mode = StepMode.NONE
         self._start_frame = None
         self._end_frame = None
@@ -54,24 +60,40 @@ class Debug(cmd.Cmd):
         return True
 
     def do_break(self, location: str) -> bool:
-        PATTERN = r"(?P<filename>.+):(?P<line>\d+)"
-        if m := re.fullmatch(PATTERN, location):
-            self._add_breakpoint(m.group("filename"), m.group("line"))
-        else:
-            print("Invalid breakpoint format")
+        try:
+            filename, line = self._parse_breakpoint_location(location)
+            self._add_breakpoint(filename, line, False)
+        except ValueError as e:
+            print(e)
         return False
 
-    def _add_breakpoint(self, filename: str, line: str) -> None:
+    def do_tbreak(self, location: str) -> bool:
+        try:
+            filename, line = self._parse_breakpoint_location(location)
+            self._add_breakpoint(filename, line, True)
+        except ValueError as e:
+            print(e)
+        return False
+
+    def _parse_breakpoint_location(self, location: str):
+        PATTERN = r"(?P<filename>.+):(?P<line>\d+)"
+        if m := re.fullmatch(PATTERN, location):
+            return m.group("filename"), m.group("line")
+        raise ValueError("Invalid breakpoint format")
+
+    def _add_breakpoint(self, filename: str, line: str, temp: bool) -> None:
         try:
             path = Path(filename).resolve(strict=True)
             lineno = int(line)
-            if lineno >= 1:
-                if path in self._breakpoints:
-                    self._breakpoints[path].add(lineno)
-                else:
-                    self._breakpoints[path] = set([lineno])
-            else:
+            if lineno <= 0:
                 print("Line number must be greater than or equal to one")
+                return
+
+            file_bps = self._breakpoints.get(path, None)
+            if file_bps:
+                file_bps[lineno] = Breakpoint(temp)
+            else:
+                self._breakpoints[path] = {lineno: Breakpoint(temp)}
         except OSError:
             print(f"Failed to resolve file path")
 
@@ -123,8 +145,11 @@ class Debug(cmd.Cmd):
     def _print_breakpoints(self) -> None:
         if len(self._breakpoints) > 0:
             for path, breakpoints in self._breakpoints.items():
-                for breakpoint in breakpoints:
-                    print(f"{path}:{breakpoint}")
+                for line, breakpoint in breakpoints.items():
+                    message = f"{path}:{line}"
+                    if breakpoint.temp:
+                        message += "*"
+                    print(message)
         else:
             print("No breakpoints specified")
 
@@ -183,7 +208,7 @@ class Debug(cmd.Cmd):
             self._step_over()
         elif self._should_step_out():
             self._step_out()
-        elif self._has_line_breakpoint(self._frame):
+        elif self._breakpoint_hit(self._frame):
             self._break(self._frame)
         return self._handle_trace_event
 
@@ -194,11 +219,22 @@ class Debug(cmd.Cmd):
         file, _ = self._get_source_location(frame)
         return file in self._breakpoints
 
-    def _has_line_breakpoint(self, frame: FrameType) -> bool:
-        file, line = self._get_source_location(frame)
-        if file in self._breakpoints:
-            return line in self._breakpoints[file]
-        return False
+    def _breakpoint_hit(self, frame: FrameType) -> bool:
+        path, line = self._get_source_location(frame)
+
+        file_bps = self._breakpoints.get(path)
+        if not file_bps:
+            return False
+
+        bp = file_bps.get(line)
+        if not bp:
+            return False
+
+        if bp.temp:
+            print(f"Removing temporary breakpoint")
+            del file_bps[line]
+
+        return True
 
     def _should_step_into(self) -> bool:
         return self._step_mode == StepMode.STEP_INTO
