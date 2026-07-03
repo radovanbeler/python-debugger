@@ -62,16 +62,18 @@ class Debug(cmd.Cmd):
         return False
 
     def _add_breakpoint(self, filename: str, line: str) -> None:
-        path = Path(filename)
-        if path.exists():
-            path = path.resolve()
+        try:
+            path = Path(filename).resolve(strict=True)
             lineno = int(line)
             if lineno >= 1:
-                self._breakpoints[path] = set([lineno])
+                if path in self._breakpoints:
+                    self._breakpoints[path].add(lineno)
+                else:
+                    self._breakpoints[path] = set([lineno])
             else:
                 print("Line number must be greater than or equal to one")
-        else:
-            print("File not found")
+        except OSError:
+            print(f"Failed to resolve file path")
 
     def do_list(self, _) -> bool:
         if self._running:
