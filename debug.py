@@ -110,6 +110,20 @@ class Debug(cmd.Cmd):
             self._end_frame = self._frame.f_back
         return True
 
+    def do_info(self, arg: str) -> None:
+        match arg:
+            case "break":
+                self._print_breakpoints()
+        return False
+
+    def _print_breakpoints(self) -> None:
+        if len(self._breakpoints) > 0:
+            for path, breakpoints in self._breakpoints.items():
+                for breakpoint in breakpoints:
+                    print(f"{path}:{breakpoint}")
+        else:
+            print("No breakpoints specified")
+
     def do_exit(self, _) -> bool:
         if self._running:
             raise DebugExit()
