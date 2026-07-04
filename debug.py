@@ -11,6 +11,7 @@ from typing import Dict
 
 @dataclass
 class Breakpoint:
+    number: int
     temp: bool = False
 
 
@@ -33,6 +34,7 @@ class Debug(cmd.Cmd):
         self.path = path
         self._exit = False
         self._running = False
+        self._breakpoint_count = 1
         self._breakpoints: Dict[Path, Dict[int, Breakpoint]] = {}
         self._step_mode = StepMode.NONE
         self._start_frame = None
@@ -89,11 +91,13 @@ class Debug(cmd.Cmd):
                 print("Line number must be greater than or equal to one")
                 return
 
-            file_bps = self._breakpoints.get(path, None)
-            if file_bps:
-                file_bps[lineno] = Breakpoint(temp)
+            bp = Breakpoint(self._breakpoint_count, temp)
+            self._breakpoint_count += 1
+
+            if filebps := self._breakpoints.get(path):
+                filebps[lineno] = bp
             else:
-                self._breakpoints[path] = {lineno: Breakpoint(temp)}
+                self._breakpoints[path] = {lineno: bp}
         except OSError:
             print(f"Failed to resolve file path")
 
@@ -143,15 +147,24 @@ class Debug(cmd.Cmd):
         return False
 
     def _print_breakpoints(self) -> None:
-        if len(self._breakpoints) > 0:
-            for path, breakpoints in self._breakpoints.items():
-                for line, breakpoint in breakpoints.items():
-                    message = f"{path}:{line}"
-                    if breakpoint.temp:
-                        message += "*"
-                    print(message)
-        else:
+        if not self._breakpoints:
             print("No breakpoints specified")
+            return
+
+        breakpoints: list[tuple[Breakpoint, str]] = []
+        for path, filebps in self._breakpoints.items():
+            for line, bp in filebps.items():
+                loc = f"{path}:{line}"
+                breakpoints.append((bp, loc))
+
+        breakpoints = sorted(breakpoints, key=lambda bp: bp[0].number)
+
+        width = len(str(breakpoints[-1][0].number))
+        for bp, loc in breakpoints:
+            line = f"{bp.number:{width}}"
+            line += "*" if bp.temp else " "
+            line += f" at {loc}"
+            print(line)
 
     def do_exit(self, _) -> bool:
         if self._running:
