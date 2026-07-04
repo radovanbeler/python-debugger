@@ -166,6 +166,46 @@ class Debug(cmd.Cmd):
             line += f" at {loc}"
             print(line)
 
+    def do_delete(self, arg: str) -> None:
+        PATTERN = r"(?P<cmd>\w+)(?P<cmdarg> \w+)?"
+
+        match = re.fullmatch(PATTERN, arg)
+        if not match:
+            print("Invalid command format")
+            return False
+
+        cmd = match.group("cmd")
+        cmdarg = match.group("cmdarg")
+        match cmd:
+            case "break":
+                self._run_delete_command(cmdarg)
+            case _:
+                print(f"Invalid delete argument {cmd}")
+        return False
+
+    def _run_delete_command(self, arg: str) -> None:
+        if not arg:
+            print("Breakpoint number not specified")
+            return False
+
+        try:
+            number = int(arg)
+        except ValueError:
+            print("Invalid breakpoint number")
+            return False
+
+        self._delete_breakpoint(number)
+
+    def _delete_breakpoint(self, number: int) -> None:
+        for path, filebps in self._breakpoints.items():
+            for line, bp in filebps.items():
+                if bp.number == number:
+                    del filebps[line]
+                    if not filebps:
+                        del self._breakpoints[path]
+                    return
+        print(f"Invalid breakpoint number")
+
     def do_exit(self, _) -> bool:
         if self._running:
             raise DebugExit()
@@ -245,7 +285,7 @@ class Debug(cmd.Cmd):
 
         if bp.temp:
             print(f"Removing temporary breakpoint")
-            del file_bps[line]
+            self._delete_breakpoint(bp.number)
 
         return True
 
