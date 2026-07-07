@@ -2,11 +2,12 @@ import cmd
 import enum
 import re
 import sys
+from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
-from typing import Dict
+from typing import Dict, Match
 
 
 @dataclass
@@ -26,6 +27,10 @@ class DebugExit(Exception):
     pass
 
 
+class DebugError(Exception):
+    pass
+
+
 class Debug(cmd.Cmd):
     prompt = "> "
 
@@ -34,8 +39,7 @@ class Debug(cmd.Cmd):
         self.path = path
         self._exit = False
         self._running = False
-        self._breakpoint_count = 1
-        self._breakpoints: Dict[Path, Dict[int, Breakpoint]] = {}
+        self._breakpoints: Dict[Path, Dict[int | str, Breakpoint]] = defaultdict(dict)
         self._step_mode = StepMode.NONE
         self._start_frame = None
         self._end_frame = None
@@ -63,43 +67,76 @@ class Debug(cmd.Cmd):
 
     def do_break(self, location: str) -> bool:
         try:
-            filename, line = self._parse_breakpoint_location(location)
-            self._add_breakpoint(filename, line, False)
-        except ValueError as e:
-            print(e)
+            self._add_breakpoint(location, temp=False)
+        except DebugError as e:
+            print(f"Failed to add breakpoint: {e}")
         return False
 
     def do_tbreak(self, location: str) -> bool:
         try:
-            filename, line = self._parse_breakpoint_location(location)
-            self._add_breakpoint(filename, line, True)
-        except ValueError as e:
-            print(e)
+            self._add_breakpoint(location, temp=True)
+        except DebugError as e:
+            print(f"Failed to add breakpoint: {e}")
         return False
 
-    def _parse_breakpoint_location(self, location: str):
-        PATTERN = r"(?P<filename>.+):(?P<line>\d+)"
-        if m := re.fullmatch(PATTERN, location):
-            return m.group("filename"), m.group("line")
-        raise ValueError("Invalid breakpoint format")
+    def _add_breakpoint(self, location: str, temp: bool) -> None:
+        PATTERNS = [
+            (r"(?P<line>\d+)", self._add_line_breakpoint),
+            (r"(?P<func>\w+)", self._add_func_breakpoint),
+            (r"(?P<filename>.+):(?P<line>\d+)", self._add_line_breakpoint),
+            (r"(?P<filename>.+):(?P<func>\w+)", self._add_func_breakpoint),
+        ]
 
-    def _add_breakpoint(self, filename: str, line: str, temp: bool) -> None:
+        for pattern in PATTERNS:
+            if m := re.fullmatch(pattern[0], location):
+                pattern[1](m, temp)
+                break
+
+    def _add_line_breakpoint(self, match: Match[str], temp: bool):
+        path, lines = self._get_lines(match.groupdict().get("filename"))
+
+        line = int(match["line"])
+        if 0 < line < len(lines):
+            self._create_breakpoint(path, line, temp)
+        else:
+            print("Invalid line number")
+
+    def _add_func_breakpoint(self, match: Match[str], temp: bool):
+        path, lines = self._get_lines(match.groupdict().get("filename"))
+
+        # Regex adapted from Python's pdb implementation.
+        FUNC_DEF = re.compile(r"^\s*def\s+(?P<func>[A-Za-z_]\w*)\s*\(")
+
+        found = False
+        func = match["func"]
+        for line in lines:
+            m = re.match(FUNC_DEF, line)
+            if m and m["func"] == func:
+                found = True
+
+        if found:
+            self._create_breakpoint(path, func, temp)
+        else:
+            print("Function not found")
+
+    def _get_lines(self, filename: str | None) -> tuple[Path, list[str]]:
         try:
-            path = Path(filename).resolve(strict=True)
-            lineno = int(line)
-            if lineno <= 0:
-                print("Line number must be greater than or equal to one")
-                return
+            path = self.path if not filename else Path(filename).resolve(strict=True)
+            lines = path.read_text().splitlines()
+        except OSError as e:
+            raise DebugError(f"Failed to read file content") from e
 
-            bp = Breakpoint(self._breakpoint_count, temp)
-            self._breakpoint_count += 1
+        return path, lines
 
-            if filebps := self._breakpoints.get(path):
-                filebps[lineno] = bp
-            else:
-                self._breakpoints[path] = {lineno: bp}
-        except OSError:
-            print(f"Failed to resolve file path")
+    def _create_breakpoint(self, path: Path, target: int | str, temp: bool) -> None:
+        number = 0
+        for filebps in self._breakpoints.values():
+            for bp in filebps.values():
+                if bp.number > number:
+                    number = bp.number
+
+        bp = Breakpoint(number + 1, temp)
+        self._breakpoints[path][target] = bp
 
     def do_list(self, _) -> bool:
         if self._running:
@@ -250,9 +287,15 @@ class Debug(cmd.Cmd):
             self._frame = None
 
     def _handle_call(self):
+        trace_handler = None
+
         if self._has_file_breakpoint(self._frame) or self._should_step_into():
-            return self._handle_trace_event
-        return None
+            trace_handler = self._handle_trace_event
+
+        if self._func_breakpoint_hit(self._frame):
+            self._break(self._frame)
+
+        return trace_handler
 
     def _handle_line(self):
         if self._should_step_into():
@@ -261,7 +304,7 @@ class Debug(cmd.Cmd):
             self._step_over()
         elif self._should_step_out():
             self._step_out()
-        elif self._breakpoint_hit(self._frame):
+        elif self._line_breakpoint_hit(self._frame):
             self._break(self._frame)
         return self._handle_trace_event
 
@@ -272,7 +315,26 @@ class Debug(cmd.Cmd):
         file, _ = self._get_source_location(frame)
         return file in self._breakpoints
 
-    def _breakpoint_hit(self, frame: FrameType) -> bool:
+    def _func_breakpoint_hit(self, frame: FrameType) -> bool:
+        path, _ = self._get_source_location(frame)
+
+        filebps = self._breakpoints.get(path)
+        if not filebps:
+            return False
+
+        func = self._frame.f_code.co_name
+
+        bp = filebps.get(func)
+        if not bp:
+            return False
+
+        if bp.temp:
+            print(f"Removing temporary breakpoint")
+            self._delete_breakpoint(bp.number)
+
+        return True
+
+    def _line_breakpoint_hit(self, frame: FrameType) -> bool:
         path, line = self._get_source_location(frame)
 
         file_bps = self._breakpoints.get(path)
@@ -343,7 +405,7 @@ class Debug(cmd.Cmd):
 
 
 if __name__ == "__main__":
-    path = Path(sys.argv[1]) if len(sys.argv) > 1 else None
+    path = Path(sys.argv[1]).resolve(strict=True) if len(sys.argv) > 1 else None
 
     if path:
         if not path.exists():
