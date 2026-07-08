@@ -245,6 +245,16 @@ class Debug(cmd.Cmd):
                     return
         print(f"Invalid breakpoint number")
 
+    def do_stack(self, _) -> bool:
+        frame = self._frame
+        while frame and frame is not self._first_frame.f_back:
+            func = frame.f_code.co_name
+            file = frame.f_code.co_filename
+            line = frame.f_lineno
+            print(f"{hex(id(frame))} in {func} at {file}:{line}")
+            frame = frame.f_back
+        return False
+
     def do_exit(self, _) -> bool:
         if self._running:
             raise DebugExit()
