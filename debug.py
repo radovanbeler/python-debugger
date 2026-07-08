@@ -97,7 +97,8 @@ class Debug(cmd.Cmd):
         path, lines = self._get_lines(match.groupdict().get("filename"))
 
         line = int(match["line"])
-        if 0 < line < len(lines):
+        print(f"len: {len(lines)}")
+        if 0 < line <= len(lines):
             self._create_breakpoint(path, line, temp)
         else:
             print("Invalid line number")
@@ -123,7 +124,7 @@ class Debug(cmd.Cmd):
     def _get_lines(self, filename: str | None) -> tuple[Path, list[str]]:
         try:
             path = self.path if not filename else Path(filename).resolve(strict=True)
-            lines = path.read_text().splitlines()
+            lines = path.read_text().splitlines(keepends=True)
         except OSError as e:
             raise DebugError(f"Failed to read file content") from e
 
