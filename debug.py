@@ -41,6 +41,7 @@ class Debug(cmd.Cmd):
         self._running = False
         self._breakpoints: Dict[Path, Dict[int | str, Breakpoint]] = defaultdict(dict)
         self._step_mode = StepMode.NONE
+        self._first_frame = None
         self._start_frame = None
         self._end_frame = None
 
@@ -170,7 +171,7 @@ class Debug(cmd.Cmd):
 
     def do_finish(self, _) -> bool:
         # If top-level frame, let it run to completion.
-        if self._frame.f_back:
+        if self._frame != self._first_frame:
             self._step_mode = StepMode.STEP_OUT
             self._end_frame = self._frame.f_back
         return True
@@ -264,6 +265,7 @@ class Debug(cmd.Cmd):
             finally:
                 sys.settrace(None)
                 self._running = False
+                self._first_frame = None
 
             self.start_prompt()
 
@@ -288,6 +290,10 @@ class Debug(cmd.Cmd):
 
     def _handle_call(self):
         trace_handler = None
+
+        path, _ = self._get_source_location(self._frame)
+        if self._first_frame is None and self.path == path:
+            self._first_frame = self._frame
 
         if self._has_file_breakpoint(self._frame) or self._should_step_into():
             trace_handler = self._handle_trace_event
@@ -398,7 +404,7 @@ class Debug(cmd.Cmd):
     def _get_source_location(self, frame: FrameType):
         line = frame.f_lineno
         try:
-            path = Path(frame.f_code.co_filename).resolve()
+            path = Path(frame.f_code.co_filename).resolve(strict=True)
         except:
             return None, line
         return path, line
